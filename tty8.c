@@ -36,8 +36,6 @@
 #include <sys/wait.h>
 #include <paths.h>
 
-#define NTTYS 8
-
 #define REDRAW_TTY(tty) ((1 == write(tty, "\f", 1)) ? 0 : -1)
 #define CLEAR_TTY(tty) ((4 == write(tty, "\033[2J", 4)) ? 0 : -1)
 #define RESET_TTY(tty) ((2 == write(tty, "\033c", 2)) ? 0 : -1)
@@ -328,7 +326,7 @@ int main(int argc, char *argv[])
 
 			/* pass SIGINT to the child */
 			case SIGINT:
-				if (-1 == kill(vttys[active].pid, sig.si_signo))
+				if (-1 == kill(vttys[active].pid, SIGINT))
 					goto reset;
 				continue;
 
@@ -378,7 +376,7 @@ int main(int argc, char *argv[])
 				if (EAGAIN == errno)
 					break;
 
-				/* if the pseudo-terminal is gone, restart the child */
+				/* if the pseudo-terminal is gone, switch to the next child */
 				if (EIO == errno) {
 					destroy_vtty(&vttys[active]);
 					if (-1 == next_child(&active,
@@ -398,7 +396,7 @@ int main(int argc, char *argv[])
 		}
 		else if (insig == sig.si_signo) {
 			/* otherwise, if it's the input signal - read from standard input
-			 * and pass everything to the psuedo-terminal */
+			 * and pass everything to the active psuedo-terminal */
 			do {
 				len = read(STDIN_FILENO, (void *) buf, sizeof(buf));
 				if (0 == len)

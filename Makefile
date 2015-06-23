@@ -23,12 +23,13 @@
 CC ?= cc
 CFLAGS ?= -O2 -pipe
 LDFLAGS ?= -Wl,-s
+NTTYS ?= 8
 DESTDIR ?=
-BIN_DIR ?= /bin
+BIN_DIR ?= /usr/bin
 MAN_DIR ?= /usr/share/man
 DOC_DIR ?= /usr/share/doc
 
-CFLAGS += -Wall -pedantic -D_GNU_SOURCE
+CFLAGS += -Wall -pedantic -D_GNU_SOURCE -DNTTYS=$(NTTYS)
 LIBS += -lutil
 
 INSTALL = install -v
