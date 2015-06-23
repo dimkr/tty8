@@ -11,6 +11,13 @@ Overview
 tty8 is an extremely simple terminal multiplexer, which provides 8 virtual
 terminals.
 
+Usage
+=====
+
+  - CTRL + K: next virtual terminal
+  - CTRL + J: previous virtual terminal
+  - CTRL + `: quit
+
 Credits and Legal Information
 =============================
 

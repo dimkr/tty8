@@ -36,14 +36,17 @@
 #include <sys/wait.h>
 #include <paths.h>
 
-#define BUF_LEN BUFSIZ
 #define NTTYS 8
-#define NEXT_VTTY ']'
-#define PREV_VTTY '['
 
 #define REDRAW_TTY(tty) ((1 == write(tty, "\f", 1)) ? 0 : -1)
 #define CLEAR_TTY(tty) ((4 == write(tty, "\033[2J", 4)) ? 0 : -1)
 #define RESET_TTY(tty) ((2 == write(tty, "\033c", 2)) ? 0 : -1)
+
+enum keys {
+	KEY_NEXT = '\v',
+	KEY_PREV = '\n',
+	KEY_QUIT = '\0'
+};
 
 struct vtty {
 	pid_t pid;
@@ -70,14 +73,9 @@ static int enable_aio(const int fd, const int sig, const pid_t pid)
 	return 0;
 }
 
-static int resize_tty(const int tty, const int src)
+static int resize_tty(const int tty, const struct winsize *size)
 {
-	struct winsize size;
-
-	if (-1 == ioctl(src, TIOCGWINSZ, &size))
-		return -1;
-
-	if (-1 == ioctl(tty, TIOCSWINSZ, &size))
+	if (-1 == ioctl(tty, TIOCSWINSZ, size))
 		return -1;
 
 	if (-1 == REDRAW_TTY(tty))
@@ -88,26 +86,27 @@ static int resize_tty(const int tty, const int src)
 
 static int start_child(struct vtty *vtty,
                        const struct termios *term,
+                       const struct winsize *size,
                        const sigset_t *mask,
-                       const char *sh,
+                       char *const argv[],
                        const int sig,
                        const pid_t self)
 {
-	/* spawn the child processes under pseudo-terminals, with the same
+	/* we spawn the child processes under pseudo-terminals, with the same
 	 * attributes as the output terminal */
 	vtty->pid = forkpty(&vtty->master, NULL, term, NULL);
 	switch (vtty->pid) {
 		case 0:
 			if (0 == sigprocmask(SIG_SETMASK, mask, NULL))
-				(void) execl(sh, sh, (char *) NULL);
+				(void) execvp(argv[0], argv);
 			exit(EXIT_FAILURE);
 
 			case (-1):
 				return -1;
 	}
 
-	/* resize the pseudo-terminal */
-	if (-1 == resize_tty(vtty->master, STDOUT_FILENO))
+	/* resize the pseudo-terminal, to match the output terminal size */
+	if (-1 == resize_tty(vtty->master, size))
 		return -1;
 
 	/* enable I/O signals for output */
@@ -119,8 +118,9 @@ static int start_child(struct vtty *vtty,
 
 static int set_active(struct vtty *vtty,
                       const struct termios *term,
+                      const struct winsize *size,
                       const sigset_t *mask,
-                      const char *sh,
+                      char *const argv[],
                       const int sig,
                       const pid_t self)
 {
@@ -128,7 +128,7 @@ static int set_active(struct vtty *vtty,
 		return -1;
 
 	if (-1 == vtty->pid) {
-		if (-1 == start_child(vtty, term, mask, sh, sig, self))
+		if (-1 == start_child(vtty, term, size, mask, argv, sig, self))
 			return -1;
 	}
 
@@ -141,19 +141,22 @@ static int set_active(struct vtty *vtty,
 static int next_child(int *active,
                       struct vtty vttys[NTTYS],
                       const struct termios *term,
+                      const struct winsize *size,
                       const sigset_t *mask,
-                      const char *sh,
+                      char *const argv[],
                       const int sig,
                       const pid_t self)
 {
-	++(*active);
-	if (NTTYS == *active)
+	if (NTTYS - 1 > *active)
+		++*active;
+	else
 		*active = 0;
 
 	if (-1 == set_active(&vttys[*active],
 	                     term,
+	                     size,
 	                     mask,
-	                     sh,
+	                     argv,
 	                     sig,
 	                     self))
 		return -1;
@@ -164,19 +167,22 @@ static int next_child(int *active,
 static int prev_child(int *active,
                       struct vtty vttys[NTTYS],
                       const struct termios *term,
+                      const struct winsize *size,
                       const sigset_t *mask,
-                      const char *sh,
+                      char *const argv[],
                       const int sig,
                       const pid_t self)
 {
-	--(*active);
-	if (-1 == *active)
+	if (0 < *active)
+		--*active;
+	else
 		*active = NTTYS - 1;
 
 	if (-1 == set_active(&vttys[*active],
 	                     term,
+	                     size,
 	                     mask,
-	                     sh,
+	                     argv,
 	                     sig,
 	                     self))
 		return -1;
@@ -193,15 +199,17 @@ static void destroy_vtty(struct vtty *vtty)
 
 int main(int argc, char *argv[])
 {
-	unsigned char buf[BUF_LEN];
+	unsigned char buf[BUFSIZ];
 	siginfo_t sig;
 	struct termios rawterm;
-	struct termios outterm;
+	struct termios oldterm;
+	struct winsize size;
 	sigset_t mask;
 	sigset_t oldmask;
 	struct vtty vttys[NTTYS];
 	pid_t self;
-	char *sh;
+	char *sh[2];
+	char *const *cmd;
 	size_t len;
 	int ret = EXIT_FAILURE;
 	int insig;
@@ -209,13 +217,29 @@ int main(int argc, char *argv[])
 	int i;
 	int active;
 
-	if (1 != argc) {
-		(void) fprintf(stderr, "Usage: %s\n", argv[0]);
-		goto end;
+	if (1 == argc) {
+		/* get the shell path */
+		sh[0] = getenv("SHELL");
+		if (NULL == sh[0])
+			sh[0] = _PATH_BSHELL;
+		sh[1] = NULL;
+		cmd = sh;
+	}
+	else {
+		if (0 != strlen(argv[1]))
+			cmd = &argv[1];
+		else {
+			(void) fprintf(stderr, "Usage: %s [CMD]\n", argv[0]);
+			goto end;
+		}
 	}
 
+	/* get the output terminal size */
+	if (-1 == ioctl(STDOUT_FILENO, TIOCGWINSZ, &size))
+		goto end;
+
 	/* get the output terminal attributes, so we can reset them later */
-	if (-1 == tcgetattr(STDOUT_FILENO, &outterm))
+	if (-1 == tcgetattr(STDOUT_FILENO, &oldterm))
 		goto end;
 
 	/* block SIGCHLD, SIGINT, SIGTERM, SIGWINCH and two real-time signals used
@@ -244,16 +268,12 @@ int main(int argc, char *argv[])
 	if (-1 == enable_aio(STDIN_FILENO, insig, self))
 		goto end;
 
-	/* get the shell path */
-	sh = getenv("SHELL");
-	if (NULL == sh)
-		sh = _PATH_BSHELL;
-
 	/* spawn one child process */
 	if (-1 == start_child(&vttys[0],
-	                      &outterm,
+	                      &oldterm,
+	                      &size,
 	                      &oldmask,
-	                      sh,
+	                      cmd,
 	                      outsig,
 	                      self))
 		goto end;
@@ -269,7 +289,7 @@ int main(int argc, char *argv[])
 
 	/* make the output terminal raw, so child process output can be passed to it
 	 * as-is */
-	(void) memcpy(&rawterm, &outterm, sizeof(rawterm));
+	(void) memcpy(&rawterm, &oldterm, sizeof(rawterm));
 	cfmakeraw(&rawterm);
 	if (-1 == tcsetattr(STDIN_FILENO, TCSADRAIN, &rawterm))
 		goto reap;
@@ -294,9 +314,10 @@ int main(int argc, char *argv[])
 						destroy_vtty(&vttys[i]);
 						if (-1 == next_child(&active,
 						                     vttys,
-						                     &outterm,
+						                     &oldterm,
+						                     &size,
 						                     &oldmask,
-						                     sh,
+						                     cmd,
 						                     outsig,
 						                     self))
 							goto reset;
@@ -324,9 +345,14 @@ int main(int argc, char *argv[])
 			 * psuedo-terminals - the kernel will take care of sending
 			 * SIGWINCH to the processes inside them */
 			case SIGWINCH:
+				if (-1 == ioctl(STDOUT_FILENO, TIOCGWINSZ, &size))
+					goto reset;
+
 				for (i = 0; NTTYS > i; ++i) {
-					if (-1 == resize_tty(vttys[i].master, STDOUT_FILENO))
-						goto reset;
+					if (-1 != vttys[i].pid) {
+						if (-1 == resize_tty(vttys[i].master, &size))
+							goto reset;
+					}
 				}
 				continue;
 		}
@@ -357,9 +383,10 @@ int main(int argc, char *argv[])
 					destroy_vtty(&vttys[active]);
 					if (-1 == next_child(&active,
 					                     vttys,
-					                     &outterm,
+					                     &oldterm,
+					                     &size,
 					                     &oldmask,
-					                     sh,
+					                     cmd,
 					                     outsig,
 					                     self))
 						goto reset;
@@ -386,27 +413,33 @@ int main(int argc, char *argv[])
 				 * accordingly */
 				if (1 == len) {
 					switch (buf[0]) {
-						case NEXT_VTTY:
+						case KEY_NEXT:
 							if (-1 == next_child(&active,
 							                     vttys,
-							                     &outterm,
+							                     &oldterm,
+							                     &size,
 							                     &oldmask,
-							                     sh,
+							                     cmd,
 							                     outsig,
 							                     self))
 								goto reset;
 							continue;
 
-						case PREV_VTTY:
+						case KEY_PREV:
 							if (-1 == prev_child(&active,
 							                     vttys,
-							                     &outterm,
+							                     &oldterm,
+							                     &size,
 							                     &oldmask,
-							                     sh,
+							                     cmd,
 							                     outsig,
 							                     self))
 								goto reset;
 							continue;
+
+						case KEY_QUIT:
+							if (-1 == raise(SIGTERM))
+								goto reset;
 					}
 				}
 
@@ -420,7 +453,7 @@ int main(int argc, char *argv[])
 
 reset:
 	/* reset the output terminal settings */
-	(void) tcsetattr(STDOUT_FILENO, TCSADRAIN, &outterm);
+	(void) tcsetattr(STDOUT_FILENO, TCSADRAIN, &oldterm);
 	(void) CLEAR_TTY(STDOUT_FILENO);
 	(void) RESET_TTY(STDOUT_FILENO);
 
