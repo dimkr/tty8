@@ -1,0 +1,21 @@
+ _   _          ___
+| |_| |_ _   _ ( _ )
+| __| __| | | |/ _ \
+| |_| |_| |_| | (_) |
+ \__|\__|\__, |\___/
+         |___/
+
+Overview
+========
+
+tty8 is an extremely simple terminal multiplexer, which provides 8 virtual
+terminals.
+
+Credits and Legal Information
+=============================
+
+tty8 is free and unencumbered software released under the terms of the MIT
+license; see COPYING for the license text. For a list of its authors and
+contributors, see AUTHORS.
+
+The ASCII art logo at the top was made using FIGlet (http://www.figlet.org/).
